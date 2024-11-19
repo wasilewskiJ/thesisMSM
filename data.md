@@ -25,6 +25,8 @@
 | J		  |  102 MB    |       132.967        |                      |  0.234    |  133.019 |
 | K		  |  573 KB    |       27.812         |                      |  0.062    |   27.810 |
 | L		  |  112 MB    |       277.929        |                      |  0.320    |  277.557 |
+| M       |  460 MB            310.893        |                      | 
+| N       |
 | ~A      |  530 KB    |       27.741         |                      |  0.060    |  27.724  |
 | ~B      |  568 KB    |       27.802         |                      |  0.080    |  27.797  |
 | ~C      |  574 KB    |       27.825         |                      |  0.068    |  27.777  |
@@ -56,5 +58,7 @@ CHANGES EXPLAINED:
 * J - (packages to kernel) -> removed 6 packages and downgraded kernel 5.17 -> 5.15
 * K -  (packets_mockdriver to mock_driver) removed 2 packages (openssl and iptables) 
 * L - (kernel to fewpackages) upgrade kernel 5.15 -> 5.17 and add 3 packages (openssl, iptables, gdb)
-
+* M - added ~366 MB .mp4 video, along with 3 gstreamer packages, ffmpeg, weston wayland and gtk+3.
+* N - added ~735 MB .zip with images
+* P - added 1.2GB Yolo model along with ~775 MB images dataset, compressed in zip
 CHANGES WITH `~` mark, means that it's reversed version. Source file became target file
