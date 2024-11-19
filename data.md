@@ -27,7 +27,7 @@
 | L	      |  190 MB    |        34.142        |                      |   0.305   |  33.680  |
 | M       |  481 MB    |        43.402
 | N       |  782 MB    |        52.114 
-| P       |  
+| P       |  2.0 GB    |        123.711 
 | ~A	  |  3.5 MB    |        14.503        |                      |   0.016   |  14.494  |
 | ~B      |  4.0 MB    |        14.521        |                      |   0.015   |  14.493  |
 | ~C      |  4.0 MB    |        14.516        |                      |   0.017   |  14.527  |
@@ -59,5 +59,10 @@ CHANGES EXPLAINED:
 * J - (packages to kernel) -> removed 6 packages and downgraded kernel 5.17 -> 5.15
 * K -  (packets_mockdriver to mock_driver) removed 2 packages (openssl and iptables) 
 * L - (kernel to fewpackages) upgrade kernel 5.15 -> 5.17 and add 3 packages (openssl, iptables, gdb)
+
+
+
+xdelta3 na P - 9minut 36 sekund, 2.0G delta
+
 
 CHANGES WITH `~` mark, means that it's reversed version. Source file became target file
