@@ -17,8 +17,8 @@
 | J		  |  102 MB    |       132.967        |                      |  0.234    |  133.019 |
 | K		  |  573 KB    |       27.812         |                      |  0.062    |   27.810 |
 | L		  |  112 MB    |       277.929        |                      |  0.320    |  277.557 |
-| M       |  460 MB    |       310.893        |                      | 
-| N       |  779 MB    |       479.887        | 
+| M       |  460 MB    |       310.893        |                      | 0.045     |  311.002 |
+| N       |  779 MB    |       479.887        |                      | 0.112     |  478.289 |
 | P       |  2.0 GB    |       912.797        |                      | 0.091     |  913.251 |
 | ~A      |  530 KB    |       27.741         |                      |  0.060    |  27.724  |
 | ~B      |  568 KB    |       27.802         |                      |  0.080    |  27.797  |
@@ -54,4 +54,5 @@ CHANGES EXPLAINED:
 * M - added ~366 MB .mp4 video, along with 3 gstreamer packages, ffmpeg, weston wayland and gtk+3.
 * N - added ~735 MB .zip with images
 * P - added 1.2GB Yolo model along with ~775 MB images dataset, compressed in zip
+  
 CHANGES WITH `~` mark, means that it's reversed version. Source file became target file
