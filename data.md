@@ -1,15 +1,8 @@
 # RESULTS OF CONDUCTED MEASUREMENTS #
 
 
-### images explained (in relation to main image) ###
-
-- fewpackages is 5.17 kernel with binary file and 3 packages added ( openssl, iptables, gdb )
-- packets_mockdriver contains mock_driver and 2 packages (openssl, iptables)
-
-
 ## LIBRSYNC AND LINUX ## 
 
-(zaokraglalem do 3 liczb znaczacych, czyli zawsze w gore ostatnie liczbe, np 23.432432 do 23.433)
 
 | CHANGES | DELTA SIZE | MEAN ENCODE TIME (s) | MEAN DECODE TIME (s) |   STDDEV  |   MEDIAN |
 | ---     |   ---      |       :---:          |     ---              |   ---     |   ---    |
