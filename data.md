@@ -1,15 +1,8 @@
 # RESULTS OF CONDUCTED MEASUREMENTS #
 
 
-### images explained (in relation to main image) ###
+## XDELTA AND LINUX ## 
 
-- fewpackages is 5.17 kernel with binary file and 3 packages added ( openssl, iptables, gdb )
-- packets_mockdriver contains mock_driver and 2 packages (openssl, iptables)
-
-
-## LIBRSYNC AND LINUX ## 
-
-(zaokraglalem do 3 liczb znaczacych, czyli zawsze w gore ostatnie liczbe, np 23.432432 do 23.433)
 
 | CHANGES | DELTA SIZE | MEAN ENCODE TIME (s) | MEAN DECODE TIME (s) |   STDDEV  |   MEDIAN |
 | ---     |   ---      |       :---:          |     ---              |   ---     |   ---    |
@@ -27,7 +20,7 @@
 | L	      |   71 MB    |        35.971        |                      |   0.305   |  33.680  |
 | M       |   469 MB   |        148.589
 | N       |            |      
-| P       |  2.0 GB    |        576             |        1 
+| P       |  2.0 GB    |        576             |         
 | ~A	  |            |                |                      |   0.016   |  14.494  |
 | ~B      |            |                |                      |   0.015   |  14.493  |
 | ~C      |            |                |                      |   0.017   |  14.527  |
