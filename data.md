@@ -1,15 +1,7 @@
 # RESULTS OF CONDUCTED MEASUREMENTS #
 
-
-### images explained (in relation to main image) ###
-
-- fewpackages is 5.17 kernel with binary file and 3 packages added ( openssl, iptables, gdb )
-- packets_mockdriver contains mock_driver and 2 packages (openssl, iptables)
-
-
 ## FDELTA AND LINUX ## 
 
-(zaokraglalem do 3 liczb znaczacych, czyli zawsze w gore ostatnie liczbe, np 23.432432 do 23.433)
 
 | CHANGES | DELTA SIZE | MEAN ENCODE TIME (s) | MEAN DECODE TIME (s) |   STDDEV  |   MEDIAN |
 | ---     |   ---      |       :---:          |     ---              |   ---     |   ---    |
@@ -27,7 +19,7 @@
 | L		  |  112 MB    |       277.929        |                      |  0.320    |  277.557 |
 | M       |  460 MB    |       310.893        |                      | 
 | N       |  779 MB    |       479.887        | 
-| P       |  2.0 GB            912.797
+| P       |  2.0 GB    |       912.797
 | ~A      |  530 KB    |       27.741         |                      |  0.060    |  27.724  |
 | ~B      |  568 KB    |       27.802         |                      |  0.080    |  27.797  |
 | ~C      |  574 KB    |       27.825         |                      |  0.068    |  27.777  |
