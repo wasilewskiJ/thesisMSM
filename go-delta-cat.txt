@@ -1,0 +1,1540 @@
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                        go-delta/[delta_apply.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+	"fmt"
+)
+
+// Apply uses the 'source' byte array, applies this
+// Delta to it and returns the updated byte array.
+// If this delta was not generated from source,
+// returns an error.
+func (ob *Delta) Apply(source []byte) ([]byte, error) {
+	if DebugTiming {
+		tmr.Start("Delta.Apply")
+		defer tmr.Stop("Delta.Apply")
+	}
+	if len(source) != ob.sourceSize {
+		return nil, mod.Error(fmt.Sprintf(
+			"Size of source [%d] does not match expected [%d]",
+			len(source), ob.sourceSize))
+	}
+	if !bytes.Equal(makeHash(source), ob.sourceHash) {
+		return nil, mod.Error("Delta does not belong to specified source")
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, ob.targetSize))
+	for i, pt := range ob.parts {
+		var data []byte
+		switch {
+		case pt.sourceLoc == -1:
+			data = pt.data
+		case pt.sourceLoc < 0 || pt.sourceLoc >= ob.sourceSize:
+			return nil, mod.Error("part", i, "sourceLoc:", pt.sourceLoc,
+				"out of range 0 -", ob.sourceSize-1)
+		case pt.sourceLoc+pt.size > ob.sourceSize:
+			return nil, mod.Error("part", i, "sourceLoc:", pt.sourceLoc,
+				"+ size:", pt.size, "extends beyond", ob.sourceSize)
+		default:
+			data = source[pt.sourceLoc : pt.sourceLoc+pt.size]
+		}
+		n, err := buf.Write(data)
+		if err != nil {
+			return nil, mod.Error(err)
+		}
+		if n != pt.size {
+			return nil, mod.Error("Wrote", n, "bytes instead of", pt.size)
+		}
+	}
+	ret := buf.Bytes()
+	if !bytes.Equal(makeHash(ret), ob.targetHash) {
+		return nil, mod.Error("Result does not match target hash.")
+	}
+	return buf.Bytes(), nil
+} //                                                                       Apply
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                   go-delta/[delta_apply_test.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+	"testing"
+)
+
+// go test --run Test_Delta_Apply_
+func Test_Delta_Apply_(t *testing.T) {
+	if PrintTestNames {
+		printTestName()
+	}
+	test := func(src []byte, d Delta, expect []byte) {
+		result, err := d.Apply(src)
+		if err != nil {
+			t.Errorf("\n encountered error: %s\n", err)
+			return
+		}
+		if !bytes.Equal(result, expect) {
+			t.Errorf("\n expect:\n\t%v\n\t'%s'\n result:\n\t%v\n\t'%s'\n",
+				expect, expect, result, result)
+		}
+	}
+	test(
+		// source:
+		nil,
+		//
+		// delta:
+		Delta{
+			sourceHash: nil,
+			targetHash: makeHash(ab("abc")),
+			parts: []deltaPart{
+				{sourceLoc: -1, size: 3, data: ab("abc")},
+			},
+		},
+		// expect:
+		ab("abc"),
+	)
+	test(
+		// source:
+		ab("abc"),
+		//
+		// delta:
+		Delta{
+			sourceHash: makeHash(ab("abc")),
+			sourceSize: 3,
+			targetHash: makeHash(ab("abc")),
+			targetSize: 3,
+			parts: []deltaPart{
+				{sourceLoc: -1, size: 3, data: ab("abc")},
+			},
+		},
+		// expect:
+		ab("abc"),
+	)
+} //                                                           Test_Delta_Apply_
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                        go-delta/[delta_bytes.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+	"encoding/binary"
+)
+
+// Bytes converts the Delta structure to a byte array
+// (for serializing to a file, etc.)
+func (ob *Delta) Bytes() []byte {
+	buf := bytes.NewBuffer(make([]byte, 0, 1024))
+	//
+	writeInt := func(i int) error {
+		err := binary.Write(buf, binary.BigEndian, int32(i))
+		if err != nil {
+			return mod.Error("writeInt(", i, ") failed:", err)
+		}
+		return nil
+	}
+	writeBytes := func(data []byte) error {
+		err := writeInt(len(data))
+		if err != nil {
+			return mod.Error("writeBytes([", len(data), "]) failed @1:", err)
+		}
+		var n int
+		n, err = buf.Write(data)
+		if err != nil {
+			return mod.Error("writeBytes([", len(data), "]) failed @2:", err)
+		}
+		if n != len(data) {
+			return mod.Error("writeBytes([", len(data), "]) failed @3:",
+				"wrote wrong number of bytes:", n)
+		}
+		return nil
+	}
+	// write the header
+	writeInt(ob.sourceSize)
+	writeBytes(ob.sourceHash)
+	writeInt(ob.targetSize)
+	writeBytes(ob.targetHash)
+	writeInt(ob.newCount)
+	writeInt(ob.oldCount)
+	writeInt(len(ob.parts))
+	//
+	// write the parts
+	for _, part := range ob.parts {
+		writeInt(part.sourceLoc)
+		if part.sourceLoc == -1 {
+			writeBytes(part.data)
+			continue
+		}
+		writeInt(part.size)
+	}
+	// compress the delta
+	if DebugInfo {
+		PL("uncompressed delta length:", len(buf.Bytes()))
+	}
+	ret := compressBytes(buf.Bytes())
+	if DebugInfo {
+		PL("compressed delta length:", len(ret))
+	}
+	return ret
+} //                                                                       Bytes
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                         go-delta/[delta_dump.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"fmt"
+)
+
+// Dump prints this object to the console in a human-friendly format.
+func (ob *Delta) Dump() {
+	pl := fmt.Println
+	pl()
+	pl("sourceHash:", ob.sourceHash)
+	pl("targetHash:", ob.targetHash)
+	pl("newCount:", ob.newCount)
+	pl("oldCount:", ob.oldCount)
+	pl("len(parts):", len(ob.parts))
+	pl()
+	for i, part := range ob.parts {
+		pl("part:", i, "sourceLoc:", part.sourceLoc,
+			"size:", part.size,
+			"data:", part.data, string(part.data))
+	}
+} //                                                                        Dump
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                              go-delta/[delta.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+// Delta stores the binary delta difference between two byte arrays
+type Delta struct {
+	sourceSize int         // size of the source array
+	sourceHash []byte      // hash of the source byte array
+	targetSize int         // size of the target array
+	targetHash []byte      // hash of the result after this Delta is applied
+	newCount   int         // number of chunks not matched in source array
+	oldCount   int         // number of matched chunks in source array
+	parts      []deltaPart // array referring to chunks in source array,
+	//                        or new bytes to append
+} //                                                                       Delta
+
+// deltaPart stores references to chunks in the source array,
+// or specifies bytes to append to result array directly
+type deltaPart struct {
+	sourceLoc int // byte position of the chunk in source array,
+	//               or -1 when 'data' supplies the bytes directly
+	//
+	size int    // size of the chunk in bytes
+	data []byte // optional bytes (only when sourceLoc is -1)
+} //                                                                   deltaPart
+
+// -----------------------------------------------------------------------------
+// # Read-Only Properties
+
+// NewCount returns the number of chunks not matched in source array.
+func (ob *Delta) NewCount() int {
+	return ob.newCount
+} //                                                                    NewCount
+
+// OldCount returns the number of matched chunks in source array.
+func (ob *Delta) OldCount() int {
+	return ob.oldCount
+} //                                                                    OldCount
+
+// SourceSize returns the size of the source byte array, in bytes.
+func (ob *Delta) SourceSize() int {
+	return ob.sourceSize
+} //                                                                  SourceSize
+
+// TargetSize returns the size of the target byte array, in bytes.
+func (ob *Delta) TargetSize() int {
+	return ob.targetSize
+} //                                                                  TargetSize
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                    go-delta/[delta_go_string.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+	"fmt"
+)
+
+// GoString returns a Go-syntax representation of the Delta structure.
+// It implements the fmt.GoStringer interface.
+func (ob Delta) GoString() string {
+	var buf bytes.Buffer
+	write := func(args ...string) {
+		for _, s := range args {
+			buf.WriteString(s)
+		}
+	}
+	str := func(v interface{}) string {
+		return fmt.Sprintf("%#v", v)
+	}
+	write("Delta{", "\n",
+		"\t", "sourceSize: ", str(ob.sourceSize), ",\n",
+		"\t", "sourceHash: ", str(ob.sourceHash), ",\n",
+		"\t", "targetSize: ", str(ob.targetSize), ",\n",
+		"\t", "targetHash: ", str(ob.targetHash), ",\n",
+		"\t", "newCount:   ", str(ob.newCount), ",\n",
+		"\t", "oldCount:   ", str(ob.oldCount), ",\n",
+		"\t", "parts: []deltaPart{\n",
+	)
+	for _, pt := range ob.parts {
+		write("\t\t{",
+			"sourceLoc: ", str(pt.sourceLoc), ", ",
+			"size: ", str(pt.size), ", ",
+			"data: ", str(pt.data), "}\n")
+	}
+	write("\t},\n}")
+	return buf.String()
+} //                                                                    GoString
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                     go-delta/[delta_internal.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+// write appends binary difference data
+func (ob *Delta) write(sourceLoc, size int, data []byte) {
+	if DebugTiming {
+		tmr.Start("write")
+		defer tmr.Stop("write")
+	}
+	if DebugInfo && DebugWriteArgs {
+		PL("write",
+			"sourceLoc:", sourceLoc,
+			"size:", size,
+			"data:", data, string(data))
+	}
+	// argument validations
+	switch {
+	case sourceLoc < -1:
+		mod.Error("sourceLoc:", sourceLoc, " < -1")
+		return
+	case sourceLoc == -1 && len(data) == 0:
+		mod.Error("sourceLoc == -1 && len(data) == 0")
+		return
+	case sourceLoc != -1 && len(data) != 0:
+		mod.Error("sourceLoc != -1 && len(data):", len(data), "!= 0")
+		return
+	case size < 1:
+		mod.Error("size:", size, " < 1")
+		return
+	}
+	// if the previous part was embedded directly, append to that part's data
+	if sourceLoc == -1 {
+		n := len(ob.parts)
+		if n > 0 {
+			last := &ob.parts[n-1]
+			if last.sourceLoc == -1 {
+				last.size += len(data)
+				last.data = append(last.data, data...)
+				return
+			}
+		}
+	}
+	// append a new part
+	var ar []byte
+	if sourceLoc == -1 {
+		ar = make([]byte, len(data))
+		copy(ar, data)
+	}
+	ob.parts = append(ob.parts,
+		deltaPart{sourceLoc: sourceLoc, size: size, data: ar})
+} //                                                                       write
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                         go-delta/[delta_load.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+	"encoding/binary"
+)
+
+// Load fills a new Delta structure from a byte
+// array previously returned by Delta.Bytes().
+func Load(data []byte) (Delta, error) {
+	//
+	// uncompress the delta
+	if DebugInfo {
+		PL("Load: compressed delta length:", len(data))
+	}
+	data = uncompressBytes(data)
+	if DebugInfo {
+		PL("Load: uncompressed delta length:", len(data))
+	}
+	buf := bytes.NewBuffer(data)
+	readInt := func() int {
+		var i int32
+		err := binary.Read(buf, binary.BigEndian, &i)
+		if err != nil {
+			mod.Error("readInt() failed:", err)
+			return -1
+		}
+		return int(i)
+	}
+	readBytes := func() []byte {
+		var size int32
+		err := binary.Read(buf, binary.BigEndian, &size)
+		if err != nil {
+			mod.Error("readBytes() failed @1:", err)
+		}
+		ar := make([]byte, size)
+		var nread int
+		nread, err = buf.Read(ar)
+		if err != nil {
+			mod.Error("readBytes() failed @2:", err)
+		}
+		if nread != int(size) {
+			mod.Error("readBytes() failed @3: size:", size, "nread:", nread)
+		}
+		return ar
+	}
+	// read the header
+	ret := Delta{
+		sourceSize: readInt(),
+		sourceHash: readBytes(),
+		targetSize: readInt(),
+		targetHash: readBytes(),
+		newCount:   readInt(),
+		oldCount:   readInt(),
+	}
+	// read the parts
+	count := readInt()
+	if count < 1 {
+		return Delta{},
+			mod.Error("readBytes() failed @4: invalid number of parts:", count)
+	}
+	ret.parts = make([]deltaPart, count)
+	for i := range ret.parts {
+		pt := &ret.parts[i]
+		pt.sourceLoc = readInt()
+		if pt.sourceLoc == -1 {
+			pt.data = readBytes()
+			pt.size = len(pt.data)
+			continue
+		}
+		pt.size = readInt()
+	}
+	return ret, nil
+} //                                                                        Load
+
+// end
+cat: delu: Is a directory
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                    go-delta/[experiment_test.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+//  to generate a test coverage report for the whole module use:
+//      go test -coverprofile cover.out
+//      go tool cover -html=cover.out
+
+import (
+	"testing"
+)
+
+const RunExperiments = false
+
+// -----------------------------------------------------------------------------
+// # Experimental / Auxiliary Tests
+
+// go test --run Test01
+func Test01(t *testing.T) {
+	if !RunExperiments {
+		return
+	}
+	if PrintTestNames {
+		printTestName()
+	}
+	PL("Test01 " + Line)
+	//
+	cmap1 := makeMap(readData("test1.zip"))
+	PL("Created cmap1. len(cmap1):", len(cmap1.m))
+	//
+	cmap2 := makeMap(readData("test2.zip"))
+	PL("Created cmap2. len(cmap2):", len(cmap2.m))
+	//
+	if false {
+		const MaxLines = 0
+		i := 1
+		for k, v := range cmap1.m {
+			PL("key:", k, "val:", v)
+			i++
+			if i > MaxLines {
+				break
+			}
+		}
+	}
+	if true {
+		for k, v := range cmap2.m {
+			_, exist := cmap1.get(k)
+			PL("key:", k, "val:", v, "exist:", exist)
+		}
+	}
+} //                                                                      Test01
+
+// go test --run Test02
+func Test02(t *testing.T) {
+	if !RunExperiments {
+		return
+	}
+	if PrintTestNames {
+		printTestName()
+	}
+	var a, b []byte
+	switch 5 {
+	case 1:
+		a = ab(AtoM + " " + AtoS + " " + AtoZ)
+		b = ab("0x0x0x" + AtoZ + " " + AtoZ + " " + AtoZ + " " + Nums)
+	case 2:
+		a = ab(AtoM + " " + AtoS + " " + AtoZ)
+		b = ab(atoz + " " + atoz + " " + atoz + " " + Nums)
+	case 3:
+		/*
+			Target array's size: 16,994,304 bytes
+			-
+			Before optimizing makeMap():
+			--------------------------------------------------------------
+			uncompressed delta length: 1,855,440 bytes
+			compressed delta length:     704,583 (4.15% of target's size)
+			elapsed time:              171.4 seconds
+			--------------------------------------------------------------
+			171.25880: delta.Make
+			  0.16411: makeHash
+			  3.78551: makeMap
+			165.82172: longestMatch
+			  0.09878: write
+			  0.13109: compressBytes
+			-
+			After optimizing makeMap():
+			--------------------------------------------------------------
+			uncompressed delta length: 1,952,772 bytes
+			compressed delta length:     729,574 (4.29% of target's size)
+			elapsed time:                2.4 seconds
+			--------------------------------------------------------------
+			  2.40135: delta.Make
+			  0.11608: makeHash
+			  1.28985: makeMap
+			  0.14999: longestMatch
+			  0.07882: write
+			  0.09806: compressBytes
+			-
+			After adding backward-scanning in longestMatch()
+			--------------------------------------------------------------
+			uncompressed delta length: 1,675,811 bytes
+			compressed delta length:     666,880 (3.92% of target's size)
+			elapsed time:                    2.4 seconds
+			--------------------------------------------------------------
+			  2.45898: delta.Make
+			  0.15910: makeHash
+			  1.49399: makeMap
+			  0.16595: longestMatch
+			  0.07311: write
+			  0.12408: compressBytes
+		*/
+		a = readData("test1.file")
+		b = readData("test2.file")
+		PL("loaded data")
+	case 4:
+		/*
+			target size:        10,356,821
+			uncompressed delta:  5,414,754
+			compressed delta:    5,258,684 (50.7% of file size)
+			elapsed time:              6.2 seconds
+		*/
+		a = readData("test1.zip")
+		b = readData("test2.zip")
+		PL("loaded data")
+	case 5:
+		/*
+				target size:        17,096,704 bytes
+				uncompressed delta:     64,081 bytes
+				compressed delta:       25,967 (50.7% of file size)
+				elapsed time:             2.06 seconds
+				--------------------------------------------------------------
+			  	  2.06019: delta.Make
+				  0.11507: makeHash
+				  1.44146: makeMap
+				  0.05109: longestMatch
+				  0.00349: write
+				  0.00600: compressBytes
+				  3.67731
+		*/
+		a = readData("day1.data")
+		b = readData("day2.data")
+		PL("loaded data")
+	}
+	if DebugTiming {
+		tmr.Start("delta.Make")
+	}
+	{
+		d := Make(a, b)
+		d.Bytes()
+	}
+	if DebugTiming {
+		tmr.Stop("delta.Make")
+		tmr.Print()
+	}
+} //                                                                      Test02
+
+// go test --run Test03
+func Test03(t *testing.T) {
+	if !RunExperiments {
+		return
+	}
+	if PrintTestNames {
+		printTestName()
+	}
+	var a, b []byte
+	switch 1 {
+	case 1:
+		a = ab(AtoM + " " + AtoS + " " + AtoZ)
+		b = ab("000" + AtoZ + " " + AtoZ + " " + AtoZ + " " + Nums)
+	}
+	// -------------------------------------------------------------------------
+	PL("\n" + Line)
+	d1 := Make(a, b)
+	PL("CREATED d1:")
+	d1.Dump()
+	//
+	dbytes := d1.Bytes()
+	PL("got 'dbytes'")
+	// -------------------------------------------------------------------------
+	PL("\n" + Line)
+	if DebugTiming {
+		tmr.Start("Load")
+	}
+	d2, err := Load(dbytes)
+	PL("CREATED d2: err:", err)
+	d2.Dump()
+	if DebugTiming {
+		tmr.Stop("Load")
+		tmr.Print()
+	}
+} //                                                                      Test03
+
+// go test --run Test04
+func Test04(t *testing.T) {
+	if !RunExperiments {
+		return
+	}
+	if PrintTestNames {
+		printTestName()
+	}
+	d := Delta{
+		sourceSize: 111,
+		sourceHash: []byte("SOURCE"),
+		targetSize: 222,
+		targetHash: []byte("TARGET"),
+		newCount:   333,
+		oldCount:   444,
+		parts: []deltaPart{
+			{},
+			{},
+		},
+	}
+	PL(d.GoString())
+} //                                                                      Test04
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                               go-delta/[func.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+	"compress/zlib"
+	"crypto/sha512"
+	"io"
+)
+
+// -----------------------------------------------------------------------------
+// # Helper Functions: Compression
+
+// compressBytes compresses an array of bytes and
+// returns the ZLIB-compressed array of bytes.
+func compressBytes(data []byte) []byte {
+	if DebugTiming {
+		tmr.Start("compressBytes")
+		defer tmr.Stop("compressBytes")
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	// zip data in standard manner
+	var b bytes.Buffer
+	w := zlib.NewWriter(&b)
+	_, err := w.Write(data)
+	w.Close()
+	//
+	// log any problem
+	const ERRM = "Failed compressing data with zlib:"
+	if err != nil {
+		mod.Error(ERRM, err)
+		return nil
+	}
+	ret := b.Bytes()
+	if len(ret) < 3 {
+		mod.Error(ERRM, "length < 3")
+		return nil
+	}
+	return ret
+} //                                                               compressBytes
+
+// uncompressBytes uncompresses a ZLIB-compressed array of bytes.
+func uncompressBytes(data []byte) []byte {
+	readCloser, err := zlib.NewReader(bytes.NewReader(data))
+	if err != nil {
+		mod.Error("uncompressBytes:", err)
+		return nil
+	}
+	ret := bytes.NewBuffer(make([]byte, 0, 8192))
+	io.Copy(ret, readCloser)
+	readCloser.Close()
+	return ret.Bytes()
+} //                                                             uncompressBytes
+
+// -----------------------------------------------------------------------------
+// # Helper Functions
+
+// makeHash returns the SHA-512 hash of byte slice 'data'.
+func makeHash(data []byte) []byte {
+	if DebugTiming {
+		tmr.Start("makeHash")
+		defer tmr.Stop("makeHash")
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	ret := sha512.Sum512(data)
+	return ret[:]
+} //                                                                    makeHash
+
+// readHash returns the SHA-512 hash of the bytes from 'stream'.
+func readHash(stream io.Reader) []byte {
+	if DebugTiming {
+		tmr.Start("readHash")
+		defer tmr.Stop("readHash")
+	}
+	hasher := sha512.New()
+	buf := make([]byte, TempBufferSize)
+	for first := true; ; first = false {
+		n, err := stream.Read(buf)
+		if err == io.EOF && first {
+			return nil
+		}
+		if err == io.EOF {
+			if n != 0 {
+				mod.Error("Expected zero: n =", n)
+			}
+			break
+		}
+		if err != nil {
+			mod.Error("Failed reading:", err)
+			return nil
+		}
+		if n == 0 {
+			break
+		}
+		n, err = hasher.Write(buf[:n])
+		if err != nil {
+			mod.Error("Failed writing:", err)
+			return nil
+		}
+	}
+	ret := hasher.Sum(nil)
+	return ret
+} //                                                                    readHash
+
+// readLen returns the total size of 'stream' in bytes.
+// After a call to readLen, the current reading
+// position returns to the start or the stream.
+func readLen(stream io.ReadSeeker) int {
+	ret, _ := stream.Seek(0, io.SeekEnd)
+	stream.Seek(0, io.SeekStart)
+	return int(ret)
+} //                                                                     readLen
+
+// readStream _ _
+func readStream(from io.ReadSeeker, to []byte) (n int64, err error) {
+	// read from the stream
+	{
+		var num int
+		num, err = from.Read(to)
+		n = int64(num)
+	}
+	if err == io.EOF {
+		if n != 0 {
+			mod.Error("Expected zero: n =", n)
+		}
+		return -1, nil
+	}
+	if err != nil {
+		return -1, mod.Error("Failed reading:", err)
+	}
+	return n, err
+} //                                                                  readStream
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                          go-delta/[func_test.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+//  to generate a test coverage report for the whole module use:
+//      go test -coverprofile cover.out
+//      go tool cover -html=cover.out
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+const (
+	AtoM = "ABCDEFGHIJKLM"
+	AtoS = "ABCDEFGHIJKLMNOPQRS"
+	AtoZ = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	Nums = "0123456789"
+	atoz = "abcdefghijklmnopqrstuvwxyz"
+)
+
+const PrintTestNames = true
+
+var Line = strings.Repeat("#", 70)
+
+// -----------------------------------------------------------------------------
+// # Function Unit Tests
+
+// go test --run Test_readHash_
+func Test_readHash_(t *testing.T) {
+	if PrintTestNames {
+		printTestName()
+	}
+	var test = func(input []byte) {
+		var resultHash []byte
+		{
+			buf := bytes.NewBuffer(input)
+			resultHash = readHash(buf)
+		}
+		var expectHash []byte
+		{
+			buf := bytes.NewBuffer(input)
+			expectHash = makeHash(buf.Bytes())
+		}
+		if !bytes.Equal(resultHash, expectHash) {
+			t.Errorf("\n input:\n\t%v\n%s\n expect:%v\n\t result:\n\t%v\n",
+				input, string(input), expectHash, resultHash)
+		}
+	}
+	TempBufferSize = 100
+	test(nil)
+	test([]byte("abc"))
+	test([]byte(strings.Repeat("abc", 1024)))
+} //                                                              Test_readHash_
+
+// -----------------------------------------------------------------------------
+// # Test Helper Functions
+
+// ab converts s to a byte array.
+func ab(s string) []byte {
+	return []byte(s)
+} //                                                                          ab
+
+// printTestName prints the name of the calling unit test.
+func printTestName() {
+	if !PrintTestNames {
+		return
+	}
+	funcName := func() string {
+		var (
+			programCounter, _, _, _ = runtime.Caller(2)
+			ret                     = runtime.FuncForPC(programCounter).Name()
+			i                       = strings.LastIndex(ret, ".")
+		)
+		if i > -1 {
+			ret = ret[i+1:]
+		}
+		ret += "()"
+		return ret
+	}
+	fmt.Println("Running test:", funcName())
+} //                                                               printTestName
+
+// readData reads 'filename' and returns its contents as an array of bytes.
+func readData(filename string) []byte {
+	ret, err := os.ReadFile(filename)
+	if err != nil {
+		PL("File reading error:", err)
+		return nil
+	}
+	return ret
+} //                                                                    readData
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                                go-delta/[go.mod]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+module github.com/balacode/go-delta
+
+go 1.16
+
+require github.com/balacode/zr v1.1.0
+
+// end
+github.com/balacode/zr v1.1.0 h1:3UsFdsRjPd6inBA1Nr9fAVHNJPor0x1K4RYArFmuzWE=
+github.com/balacode/zr v1.1.0/go.mod h1:Gek772GtTXR/nDElnIYqB8kHcg3nKhjzTt1yZNUVnmA=
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                          go-delta/[index_map.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+const DebugIndex = false
+
+type chunk [MatchSize]byte
+
+// indexMap _ _
+type indexMap struct {
+	m map[chunk][]int
+} //                                                                    indexMap
+
+// makeMap creates a map of unique chunks in 'data'.
+// The key specifies the unique chunk of bytes, while the
+// values array returns the positions of the chunk in 'data'.
+func makeMap(data []byte) indexMap {
+	if DebugTiming {
+		tmr.Start("makeMap")
+		defer tmr.Stop("makeMap")
+	}
+	if DebugIndex {
+		PL("makeMap init:", len(data), "bytes")
+	}
+	lenData := len(data)
+	if lenData < MatchSize {
+		return indexMap{m: map[chunk][]int{}}
+	}
+	dbgN := 0
+	ret := indexMap{m: make(map[chunk][]int, lenData/4)}
+	var key chunk
+	lenData -= MatchSize
+	if DebugIndex {
+		PL("makeMap begin loop")
+	}
+	for i := 0; i < lenData; {
+		copy(key[:], data[i:])
+		ar, found := ret.m[key]
+		if !found {
+			ret.m[key] = []int{i}
+			i++
+			continue
+		}
+		if len(ar) >= MatchLimit {
+			i++
+			continue
+		}
+		ret.m[key] = append(ret.m[key], i)
+		i += MatchSize
+		if DebugIndex {
+			dbgN++
+			if dbgN < 10e6 {
+				continue
+			}
+			dbgN = 0
+			PL("i:", i, "len(m):", len(ret.m))
+		}
+	}
+	return ret
+} //                                                                     makeMap
+
+// get _ _
+func (ob *indexMap) get(key chunk) (locs []int, found bool) {
+	locs, found = ob.m[key]
+	return
+} //                                                                         get
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                    go-delta/[integrated_test.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+// This unit test checks the functioning of the entire module.
+// It calls Make(), Delta.Apply(), Delta.Bytes() and delta.Load().
+
+import (
+	"bytes"
+	"testing"
+)
+
+// go test --run Test_Integrated_
+func Test_Integrated_(t *testing.T) {
+	if PrintTestNames {
+		printTestName()
+	}
+	vals := [][]byte{
+		ab(""),
+		ab(" "),
+		ab(AtoZ),
+		ab(AtoM),
+		//
+		ab("start" + Nums),
+		ab(Nums + "middle" + Nums),
+		ab(Nums + Nums + "end"),
+		//
+		ab(
+			"Lorem ipsum dolor sit amet, consetetur sadipscing elitr," +
+				" sed diam nonumy eirmod tempor invidunt ut labore et" +
+				" dolore magna aliquyam erat, sed diam voluptua. At vero" +
+				" eos et accusam et justo duo dolores et ea rebum. Stet" +
+				" clita kasd gubergren, no sea takimata sanctus est Lorem" +
+				" ipsum dolor sit amet. Lorem ipsum dolor sit amet," +
+				" consetetur sadipscing elitr, sed diam nonumy eirmod" +
+				" tempor invidunt ut labore et dolore magna aliquyam erat," +
+				" sed diam voluptua. At vero eos et accusam et justo duo" +
+				" dolores et ea rebum. Stet clita kasd gubergren, no sea" +
+				" takimata sanctus est Lorem ipsum dolor sit amet. Lorem" +
+				" ipsum dolor sit amet, consetetur sadipscing elitr, sed" +
+				" diam nonumy eirmod tempor invidunt ut labore et dolore" +
+				" magna aliquyam erat, sed diam voluptua. At vero eos et" +
+				" accusam et justo duo dolores et ea rebum. Stet clita" +
+				" kasd gubergren, no sea takimata sanctus est Lorem ipsum" +
+				" dolor sit amet. suscipit lobortis nisl ut aliquip ex ea" +
+				" commodo consequat"),
+		ab(
+			"Lorem ipsum dolor sit amet, consetetur sadipscing elitr"),
+		ab(
+			" consetetur sadipscing elitr, sed diam nonumy eirmod" +
+				" magna aliquyam erat, sed diam voluptua. At vero eos et"),
+		ab(
+			"sit amet, consetetur sadipscing elitr" +
+				" sed diam nonumy eirmod tempor"),
+		ab(
+			"suscipit lobortis nisl ut aliquip ex ea commodo consequat."),
+		ab(
+			"Lorem ipsum dolor sit amet, consetetur sadipscing elitr," +
+				AtoZ +
+				" sed diam voluptua. At vero eos et accusam et justo duo" +
+				AtoM +
+				" commodo consequat"),
+	}
+	for _, a := range vals {
+		for _, b := range vals {
+			var ar []byte
+			{
+				d := Make(a, b)
+				ar = d.Bytes()
+			}
+			var d Delta
+			var err error
+			d, err = Load(ar)
+			if err != nil {
+				PL("FAILED @1")
+				PL("SOURCE:", "\n", string(a))
+				PL("TARGET:", "\n", string(b))
+				PL("ERROR:", err)
+				continue
+			}
+			var result []byte
+			result, err = d.Apply(a)
+			if err != nil {
+				PL("FAILED @2")
+				PL("SOURCE:", "\n", string(a))
+				PL("TARGET:", "\n", string(b))
+				PL("ERROR:", err)
+				continue
+			}
+			if !bytes.Equal(result, b) {
+				PL("FAILED @3")
+				PL("SOURCE:", "\n", string(a))
+				PL("TARGET:", "\n", string(b))
+				PL("RETURNED:", "\n", string(result))
+			}
+		}
+	}
+} //                                                            Test_Integrated_
+
+// end
+MIT License
+
+Copyright (c) 2019 Balarabe
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+-- -----------------------------------------------------------------------------
+-- github.com/balacode/go-delta                       go-delta/[lorem_ipsum.txt]
+-- (c) balarabe@protonmail.com                                      License: MIT
+-- -----------------------------------------------------------------------------
+
+abcdefghijklmnopqrstuvwxyz
+abcdefghijklmnopqrstuvwxyz
+abcdefghijklmnopqrstuvwxyz
+
+1234567890
+1234567890
+
+Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore
+et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea
+rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum
+dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore
+magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet
+clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet,
+consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam
+erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd
+gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet.
+
+Duis autem vel eum iriure dolor in hendrerit in vulputate velit esse molestie consequat, vel illum dolore
+eu feugiat nulla facilisis at vero eros et accumsan et iusto odio dignissim qui blandit praesent luptatum
+zzril delenit augue duis dolore te feugait nulla facilisi. Lorem ipsum dolor sit amet, consectetuer
+adipiscing elit, sed diam nonummy nibh euismod tincidunt ut laoreet dolore magna aliquam erat volutpat.
+
+Ut wisi enim ad minim veniam, quis nostrud exerci tation ullamcorper suscipit lobortis nisl ut aliquip ex
+ea commodo consequat. Duis autem vel eum iriure dolor in hendrerit in vulputate velit esse molestie
+consequat, vel illum dolore eu feugiat nulla facilisis at vero eros et accumsan et iusto odio dignissim
+qui blandit praesent luptatum zzril delenit augue duis dolore te feugait nulla facilisi.
+
+Nam liber tempor cum soluta nobis eleifend option congue nihil imperdiet doming id quod mazim placerat
+facer possim assum. Lorem ipsum dolor sit amet, consectetuer adipiscing elit, sed diam nonummy nibh
+euismod tincidunt ut laoreet dolore magna aliquam erat volutpat. Ut wisi enim ad minim veniam, quis
+nostrud exerci tation ullamcorper suscipit lobortis nisl ut aliquip ex ea commodo consequat.
+
+Duis autem vel eum iriure dolor in hendrerit in vulputate velit esse molestie consequat, vel illum dolore
+eu feugiat nulla facilisis. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd
+gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur
+sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed
+diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea
+takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing elitr,
+At accusam aliquyam diam diam dolore dolores duo eirmod eos erat, et nonumy sed tempor et et invidunt
+justo labore Stet clita ea et gubergren, kasd magna no rebum. sanctus sea sed takimata ut vero voluptua.
+est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy
+eirmod tempor invidunt ut laboreet dolore magna aliquyam erat.
+
+Consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam
+erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd
+gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur
+sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed
+diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea
+takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing elitr,
+sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At
+vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus
+est Lorem ipsum dolor sit amet.
+
+-- end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                               go-delta/[make.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+)
+
+// Make given two byte arrays 'a' and 'b', calculates the binary
+// delta difference between the two arrays and returns it as a Delta.
+// You can then use Delta.Apply() to generate 'b' from 'a' the Delta.
+func Make(a, b []byte) Delta {
+	if DebugTiming {
+		tmr.Start("delta.Make")
+		defer tmr.Stop("delta.Make")
+	}
+	ret := Delta{
+		sourceSize: len(a),
+		sourceHash: makeHash(a),
+		targetSize: len(b),
+		targetHash: makeHash(b),
+	}
+	lenB := len(b)
+	if lenB < MatchSize {
+		ret.parts = []deltaPart{{sourceLoc: -1, size: lenB, data: b}}
+		return ret
+	}
+	cmap := makeMap(a)
+	var key chunk
+	tmc := 0 // timing counter
+	for i := 0; i < lenB; {
+		if DebugInfo && i-tmc >= 10000 {
+			PL("delta.Make:", int(100.0/float32(lenB)*float32(i)), "%")
+			tmc = i
+		}
+		if lenB-i < MatchSize {
+			ret.write(-1, lenB-i, b[i:])
+			ret.newCount++
+			break
+		}
+		var locs []int
+		found := false
+		if lenB-i >= MatchSize {
+			copy(key[:], b[i:])
+			locs, found = cmap.get(key)
+		}
+		if found {
+			at, size := longestMatch(a, locs, b, i)
+			ret.write(at, size, nil)
+			i += size
+			ret.oldCount++
+			continue
+		}
+		ret.write(-1, MatchSize, key[:])
+		i += MatchSize
+		ret.newCount++
+	}
+	if DebugInfo {
+		PL("delta.Make: finished writing parts. len(b) = ", len(b))
+	}
+	return ret
+} //                                                                        Make
+
+// -----------------------------------------------------------------------------
+// # Helper Functions
+
+// longestMatch is called by Make() to determine the longest
+// matching block of bytes between the source array 'a'
+// and target array 'b' out of limited choices.
+//
+// 'bLoc' specifies the position (in 'b') of the chunk to match.
+// The MatchSize global constant specifies the length of each
+// chunk in bytes, usually 8 bytes.
+//
+// 'aLocs' is an array of positions (in 'a') at which the chunk is found.
+// This array is produced by makeMap() before longestMatch() is called.
+//
+// Returns the location ('loc') of the match in 'a'
+// and the length of the match in 'b' ('size').
+//
+func longestMatch(a []byte, aLocs []int, b []byte, bLoc int) (loc, size int) {
+	if DebugTiming {
+		tmr.Start("longestMatch")
+		defer tmr.Stop("longestMatch")
+	}
+	if len(aLocs) < 1 {
+		mod.Error("aLocs is empty")
+		return -1, -1
+	}
+	bEnd := len(b) - 1
+	if bLoc < 0 || bLoc > bEnd {
+		mod.Error("bLoc", bLoc, "out of range [0 -", len(b), "]")
+		return -1, -1
+	}
+	var (
+		aEnd    = len(a) - 1
+		retLoc  = -1
+		retSize = -1
+	)
+	for _, ai := range aLocs {
+		n := MatchSize
+		bi := bLoc
+		if !bytes.Equal(a[ai:ai+n], b[bi:bi+n]) {
+			mod.Error("mismatch at ai:", ai, "bi:", bi)
+			continue
+		}
+		/*
+			DISABLED: EXTENDING MATCH BACKWARD OVERLAPS PREVIOUSLY-WRITTEN PARTS
+			// extend match backward
+			for ai-1 >= 0 && bi-1 >= 0 && a[ai-1] == b[bi-1] {
+				ai--
+				bi--
+				n++
+			}
+		*/
+		// extend match forward
+		for ai+n <= aEnd && bi+n <= bEnd && a[ai+n] == b[bi+n] {
+			n++
+		}
+		if n > retSize {
+			retLoc = ai
+			retSize = n
+		}
+	}
+	return retLoc, retSize
+} //                                                                longestMatch
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                          go-delta/[make_test.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"testing"
+)
+
+// go test --run Test_Make_
+func Test_Make_(t *testing.T) {
+	if PrintTestNames {
+		printTestName()
+	}
+	// func Make(a, b []byte) Delta
+	//
+	test := func(a, b []byte, expect Delta) {
+		result := Make(a, b)
+		if result.GoString() != expect.GoString() {
+			t.Errorf("\n expect:\n\t%s\n result:\n\t%s\n",
+				expect.GoString(), result.GoString())
+		}
+	}
+	test(
+		ab(AtoZ),
+		ab(AtoZ),
+		Delta{
+			sourceSize: 26,
+			sourceHash: makeHash(ab(AtoZ)),
+			targetSize: 26,
+			targetHash: makeHash(ab(AtoZ)),
+			newCount:   0,
+			oldCount:   1,
+			parts: []deltaPart{
+				{sourceLoc: 0, size: 26, data: nil},
+			},
+		},
+	)
+} //                                                                  Test_Make_
+
+// end
+// -----------------------------------------------------------------------------
+// github.com/balacode/go-delta                             go-delta/[module.go]
+// (c) balarabe@protonmail.com                                      License: MIT
+// -----------------------------------------------------------------------------
+
+package delta
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+
+	"github.com/balacode/zr"
+)
+
+// -----------------------------------------------------------------------------
+// # Module Constants / Variables
+
+const (
+	// MatchLimit specifies the maximum number of positions tracked
+	// for each unique key in the map of source data. See makeMap().
+	MatchLimit = 50
+
+	// MatchSize specifies the size of unique
+	// chunks being searched for, in bytes.
+	MatchSize = 9
+)
+
+var (
+	// PL is fmt.Println() but is used only for debugging.
+	PL = fmt.Println
+
+	// TempBufferSize sets the size of memory buffers for reading files and other
+	// streams. This memory is not fixed but allocated/released transiently.
+	TempBufferSize = 32 * 1024 * 1024 // 32 MB
+
+	// tmr is used for timing all methods/functions during tuning.
+	tmr zr.Timer
+)
+
+// -----------------------------------------------------------------------------
+// # Debugging Flags
+
+var (
+	// DebugInfo when set, causes printing of messages helpful for debugging.
+	DebugInfo = false
+
+	// DebugTiming controls timing (benchmarking) of time spent in each function.
+	DebugTiming = true
+
+	// DebugWriteArgs when set, prints the arguments passed to write()
+	DebugWriteArgs = false
+)
+
+// -----------------------------------------------------------------------------
+// # Error Handler
+
+// SetErrorFunc changes the error-handling function, so that
+// all errors in this package will be sent to this handler,
+// which is useful for custom logging and mocking during unit tests.
+// To restore the default error handler use SetErrorFunc(nil).
+func SetErrorFunc(fn func(args ...interface{}) error) {
+	if fn == nil {
+		mod.Error = defaultErrorFunc
+		return
+	}
+	mod.Error = fn
+} //                                                                SetErrorFunc
+
+// defaultErrorFunc is the default error
+// handling function assigned to mod.Error
+func defaultErrorFunc(args ...interface{}) error {
+	//
+	// write all args to a message string (add spaces between args)
+	var buf bytes.Buffer
+	for i, arg := range args {
+		if i > 0 {
+			buf.WriteString(" ")
+		}
+		buf.WriteString(fmt.Sprint(arg))
+	}
+	msg := buf.String()
+	//
+	// if DebugInfo is on, print the message to the console
+	if DebugInfo {
+		fmt.Println("ERROR:\n", msg)
+	}
+	// return error based on message
+	return errors.New(msg)
+} //                                                            defaultErrorFunc
+
+// -----------------------------------------------------------------------------
+// # Module Global
+
+// mod variable though wich mockable functions are called
+var mod = thisMod{Error: defaultErrorFunc}
+
+// thisMod specifies mockable functions
+type thisMod struct {
+	Error func(args ...interface{}) error
+}
+
+// ModReset restores all mocked functions to the original standard functions.
+func (ob *thisMod) Reset() { ob.Error = defaultErrorFunc }
+
+// end
+## go-delta - A Go package and utility to generate and apply binary delta updates.
+
+[![Go Report Card](https://goreportcard.com/badge/github.com/balacode/go-delta)](https://goreportcard.com/report/github.com/balacode/go-delta)
+[![Build Status](https://travis-ci.org/balacode/go-delta.svg?branch=master)](https://travis-ci.org/balacode/go-delta)
+[![Test Coverage](https://coveralls.io/repos/github/balacode/go-delta/badge.svg?branch=master&service=github)](https://coveralls.io/github/balacode/go-delta?branch=master)
+[![Gitter chat](https://badges.gitter.im/balacode/go-delta.png)](https://gitter.im/go-delta/Lobby)
+[![godoc](https://godoc.org/github.com/balacode/go-delta?status.svg)](https://godoc.org/github.com/balacode/go-delta)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+## Suggestions:
+
+- Works best on text files, database dumps and any other files with lots of
+  repeating patterns and few changes between updates.
+
+- Generating deltas of compressed files is not recommended because a small
+  change in the source data can lead to lots of changes in the compressed
+  result, so generating a delta update may give you only minimal size
+  reduction.
+
+- Don't compress bytes returned by Delta.Bytes() because they are already
+  compressed using ZLib compression.
+
+- Every delta update adds about 156 bytes for the source and target hashes
+  and various lengths, so it is not recommended for very miniscule updates.
+
+## Demonstration:
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/balacode/go-delta"
+)
+
+func main() {
+    fmt.Print("Binary delta update demo:\n\n")
+
+    // The original data (20 bytes):
+    var source = []byte("quick brown fox, lazy dog, and five boxing wizards")
+    fmt.Print("The original is:", "\n", string(source), "\n\n")
+
+    // The updated data containing the original and new content (82 bytes):
+    var target = []byte(
+        "The quick brown fox jumps over the lazy dog. " +
+        "The five boxing wizards jump quickly.",
+    )
+    fmt.Print("The update is:", "\n", string(target), "\n\n")
+
+    var dbytes []byte
+    {
+    	// Use Make() to generate a compressed patch from source and target
+    	var d = delta.Make(source, target)
+    	
+    	// Convert the delta to a slice of bytes (e.g. for writing to a file)
+    	dbytes = d.Bytes()
+    }
+
+    // Create a Delta from the byte slice
+    var d = delta.Load(dbytes)
+
+    // Apply the patch to source to get the target
+    // The size of the patch is much shorter than target.
+    var target2, err = d.Apply(source)
+    if err != nil {
+        fmt.Println(err)
+    }
+    fmt.Print("Patched:", "\n", string(target2), "\n\n")
+} //                                                                        main
+```
+
+
